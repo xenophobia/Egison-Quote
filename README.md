@@ -31,7 +31,7 @@ Constant expression
 We can embed static-evaluated Egison expression , i.e. constant expression.
 such that
 
-    combination3_2 = [egison| (match-all {1 2 3} (Multiset Integer) [<cons $x <cons $y _>> [x y]) :: [(Int, Int)] |]
+    combination3_2 = [egison| (match-all {1 2 3} (Multiset Integer) [<cons $x <cons $y _>> [x y]]) :: [(Int, Int)] |]
 
 **Note**: Static expression is evaluated in *compile time* .
 
