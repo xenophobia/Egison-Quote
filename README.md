@@ -16,7 +16,7 @@ We can use Egison-quote as follows
 
 Type signature **`<Typ>`** is defined by following BNF.
 
-    <Typ> = Int | Double | Float | Double | Char | String | [<Typ>] | (<Typ>, <Typ>, ..., <Typ>) | <Typ> -> <Typ> -> ... <Typ>
+    <Typ> = Bool | Int | Double | Float | Double | Char | String | [<Typ>] | (<Typ>, <Typ>, ..., <Typ>) | <Typ> -> <Typ> -> ... <Typ>
 
 * Egison *collection* have type [a].
 Thus, we can't use hetero-type collection such as `{1, 'a'}`
