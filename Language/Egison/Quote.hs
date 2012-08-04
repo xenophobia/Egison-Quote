@@ -46,7 +46,7 @@ runIOThrowsError = fmap ignore . runErrorT
 -- * QuasiQuoter
 
 -- | QuasiQuoter for egison expression
--- The format is: [egison | <egison-expression> :: <type-signature>]
+-- The format is: [egison | <egison-expression> :: <type-signature> |]
 -- Type signature is defined as follows
 -- > <Typ> = Bool | Int | Double | Float | Double | Char | String | [<Typ>] | (<Typ>, <Typ>, ..., <Typ>) | <Typ> -> <Typ> -> ... <Typ>
 -- The constant expression is compile-time evaluated.
