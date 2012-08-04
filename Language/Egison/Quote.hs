@@ -1,6 +1,6 @@
 {-# Language TemplateHaskell, QuasiQuotes, TypeSynonymInstances, FlexibleInstances, UndecidableInstances, OverlappingInstances, IncoherentInstances #-}
 
-module Quote where
+module Language.Egison.Quote(egison) where
 
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
@@ -43,7 +43,24 @@ runIOThrowsError :: IOThrowsError a -> IO a
 runIOThrowsError = fmap ignore . runErrorT
     where ignore = either (error . show) id
 
--- Type Signature
+-- * QuasiQuoter
+
+-- | QuasiQuoter for egison expression
+-- [egison | ]
+egison :: QuasiQuoter
+egison = QuasiQuoter {
+           quoteExp = (\q -> do
+                         let (expr, typ) = extractValue . readQuote $ q
+                         val <- evalEgison expr
+                         toHaskellExpQ val typ),
+           quotePat = error "Not implemented pat-quote.",
+           quoteType = error "Not implemented type-quote.",
+           quoteDec = error "Not implemented dec-quote."
+         }
+
+-- * Type
+
+-- | The type of type signature of egison expression
 data TypeSignature = CharTS | StringTS | BoolTS | IntTS | IntegerTS | FloatTS | DoubleTS
                    | TupleTS [TypeSignature] | ListTS TypeSignature 
                    | ArrowTS [TypeSignature] TypeSignature deriving (Show)
@@ -78,16 +95,11 @@ tsToType (ArrowTS t1 t2) = appT (foldl appT arrowT (map tsToType t1)) (tsToType 
 
 -- Parser for TypeSignature
 parseType = do
-  t1 <- parseType'
-  spaces
-  t2 <- many (do string "->"
-                 spaces
-                 t <- parseType'
-                 spaces
-                 return t)
-  case t2 of
-    [] -> return t1
-    t2 -> return (ArrowTS (t1:init t2) (last t2))
+  t1_ <- many (try $ lexeme parseType' <* lexeme (string "->"))
+  t2 <- lexeme parseType'
+  case t1_ of
+    [] -> return t2
+    t1 -> return (ArrowTS t1 t2)
 
 parseType' = (string "Char" >> return CharTS)
              <|> (string "String" >> return StringTS)
@@ -96,45 +108,18 @@ parseType' = (string "Char" >> return CharTS)
              <|> (string "Integer" >> return IntegerTS)
              <|> (string "Float" >> return FloatTS)
              <|> (string "Double" >> return DoubleTS)
-             <|> do
-               char '('
-               spaces
-               thd <- parseType'
-               ttl <- many (spaces >> char ',' >> spaces >> parseType')
-               spaces
-               char ')'
-               if null ttl
-                 then return thd
-                 else return (TupleTS (thd:ttl))
-             <|> do
-               char '['
-               spaces
-               t <- parseType'
-               spaces
-               char ']'
-               return (ListTS t)
+             <|> parens (do thd <- lexeme parseType'
+                            ttl <- many (lexeme (char ',') >> lexeme parseType')
+                            return $ if null ttl then thd else TupleTS (thd:ttl))
+             <|> brackets (ListTS <$> lexeme parseType')
 
 readQuote :: String -> ThrowsError (EgisonExpr, TypeSignature)
 readQuote = readOrThrow $ do
   spaces
-  expr <- parseExpr
-  spaces
-  string "::"
-  spaces
-  typ <- parseType
-  spaces
+  expr <- lexeme parseExpr
+  lexeme (string "::")
+  typ <- lexeme parseType
   return (expr, typ)
-
-egison :: QuasiQuoter
-egison = QuasiQuoter {
-           quoteExp = (\q -> do
-                         let (expr, typ) = extractValue . readQuote $ q
-                         val <- evalEgison expr
-                         toHaskellExpQ val typ),
-           quotePat = error "Not implemented pat-quote.",
-           quoteType = error "Not implemented type-quote.",
-           quoteDec = error "Not implemented dec-quote."
-         }
 
 instance Lift InnerExpr where
   lift (ElementExpr x) = appE (conE 'ElementExpr) (lift x)
