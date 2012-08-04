@@ -1,6 +1,6 @@
 {-# Language TemplateHaskell, QuasiQuotes, TypeSynonymInstances, FlexibleInstances, UndecidableInstances, OverlappingInstances, IncoherentInstances #-}
 
-module Language.Egison.Quote(egison) where
+module Language.Egison.Quote(egison, TypeSignature) where
 
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
@@ -46,7 +46,12 @@ runIOThrowsError = fmap ignore . runErrorT
 -- * QuasiQuoter
 
 -- | QuasiQuoter for egison expression
--- [egison | ]
+-- The format is: [egison | <egison-expression> :: <type-signature>]
+-- Type signature is defined as follows
+-- > <Typ> = Bool | Int | Double | Float | Double | Char | String | [<Typ>] | (<Typ>, <Typ>, ..., <Typ>) | <Typ> -> <Typ> -> ... <Typ>
+-- The constant expression is compile-time evaluated.
+-- lambda abstraction(egison function) is run-time evaluated by using 'Language.Egison.Core.eval' and 'System.Unsafe.unsafePerformIO'.
+-- For more detailed usage, please refer to <https://github.com/xenophobia/Egison-Quote>. 
 egison :: QuasiQuoter
 egison = QuasiQuoter {
            quoteExp = (\q -> do
