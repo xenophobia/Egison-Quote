@@ -33,7 +33,7 @@ such that
 
     combination3_2 = [egison| (match-all {1 2 3} (Multiset Integer) [<cons $x <cons $y _>> [x y]]) :: [(Int, Int)] |]
 
-**Note**: Static expression is evaluated in *compile time* .
+**Note**: Static expression is evaluated in *run time* .
 
 Lambda abstraction
 ===========================

@@ -49,15 +49,11 @@ runIOThrowsError = fmap ignore . runErrorT
 -- The format is: [egison | <egison-expression> :: <type-signature> |]
 -- Type signature is defined as follows
 -- > <Typ> = Bool | Int | Double | Float | Double | Char | String | [<Typ>] | (<Typ>, <Typ>, ..., <Typ>) | <Typ> -> <Typ> -> ... <Typ>
--- The constant expression is compile-time evaluated.
--- lambda abstraction(egison function) is run-time evaluated by using 'Language.Egison.Core.eval' and 'System.Unsafe.unsafePerformIO'.
+-- Embedded Egison expression is run-time evaluated by using 'Language.Egison.Core.eval' and 'System.Unsafe.unsafePerformIO'.
 -- For more detailed usage, please refer to <https://github.com/xenophobia/Egison-Quote>. 
 egison :: QuasiQuoter
 egison = QuasiQuoter {
-           quoteExp = (\q -> do
-                         let (expr, typ) = extractValue . readQuote $ q
-                         val <- evalEgison expr
-                         toHaskellExpQ val typ),
+           quoteExp = uncurry toHaskellExp . extractValue . readQuote,
            quotePat = error "Not implemented pat-quote.",
            quoteType = error "Not implemented type-quote.",
            quoteDec = error "Not implemented dec-quote."
@@ -180,17 +176,8 @@ instance Lift EgisonExpr where
   lift SomethingExpr = conE 'SomethingExpr
   lift x = error "Not implemented lift"
 
-toHaskellExpQ :: EgisonVal -> TypeSignature -> ExpQ
-toHaskellExpQ (Char c) CharTS = litE (charL c)
-toHaskellExpQ (String s) StringTS = litE (stringL s)
-toHaskellExpQ (Bool b) BoolTS = conE (if b then 'True else 'False)
-toHaskellExpQ (Number n) IntegerTS = (litE (integerL n))
-toHaskellExpQ (Number n) IntTS = appE (varE 'fromIntegral) (litE (integerL n))
-toHaskellExpQ (Float b) FloatTS = litE (rationalL . toRational $ b)
-toHaskellExpQ (Float b) DoubleTS = litE (rationalL . toRational $ b)
-toHaskellExpQ (Collection xs) (ListTS t) = listE $ map (flip toHaskellExpQ t) xs
-toHaskellExpQ (Tuple xs) (TupleTS ts) = tupE $ zipWith toHaskellExpQ xs ts
-toHaskellExpQ (Func (ATuple args) expr _) (ArrowTS t1 t2) | length args == length t1 = do
+toHaskellExp :: EgisonExpr -> TypeSignature -> ExpQ
+toHaskellExp (FuncExpr (ATuple args) expr) (ArrowTS t1 t2) | length args == length t1 = do
   env <- newName "env"
   let (argsName, argsType) = unzip . concat $ zipWith argsExpand args t1
       argsExpr = zipWith (\aname atype -> sigE (varE (mkName aname)) atype) argsName argsType
@@ -201,7 +188,7 @@ toHaskellExpQ (Func (ATuple args) expr _) (ArrowTS t1 t2) | length args == lengt
    (appE (varE 'unsafePerformIO) 
     (appE (varE 'runIOThrowsError)
      (doE $ bindEnv : loadEnv : (bindExprs ++ [noBindS (appE (appE (varE 'fmap) (converter t2)) [|eval $(varE env) expr|])])))))
-toHaskellExpQ e t = error $ "Invarid expression or type: " ++ show e ++ " :: " ++ show t
+toHaskellExp expr typ = appE (converter typ) (appE (varE 'evalEgison) (lift expr))
 
 argsExpand :: Args -> TypeSignature -> [(String, TypeQ)]
 argsExpand (AVar a) t = [(a, tsToType t)]
@@ -212,8 +199,8 @@ toHaskellArgsPat :: Args -> PatQ
 toHaskellArgsPat (AVar a) = varP (mkName a)
 toHaskellArgsPat (ATuple as) = tupP $ map toHaskellArgsPat as
 
-evalEgison :: EgisonExpr -> Q EgisonVal
-evalEgison expr = do
-  env <- runIO primitiveBindings
-  runIO $ loadLibraries env
-  runIO $ runIOThrowsError $ eval env expr
+evalEgison :: EgisonExpr -> EgisonVal
+evalEgison expr = unsafePerformIO $ do
+  env <- primitiveBindings
+  loadLibraries env
+  runIOThrowsError $ eval env expr
