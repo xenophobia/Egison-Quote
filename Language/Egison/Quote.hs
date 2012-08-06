@@ -1,3 +1,17 @@
+-----------------------------------------------------------------------------
+-- |
+-- Module      :  Language.Egison.Quote
+-- Copyright   :  (c) Takuya Kuwahara 2012
+-- License     :  MIT
+-- 
+-- Maintainer  :  kuwahara111011@gmail.com
+-- Stability   :  unstable
+-- Portability :  non-portable (GHC-7.4.0 for GHC's extensions)
+-- 
+-- The quasi quotes for egison expression
+-- 
+-----------------------------------------------------------------------------   
+
 {-# Language TemplateHaskell, QuasiQuotes, TypeSynonymInstances, FlexibleInstances, UndecidableInstances, OverlappingInstances, IncoherentInstances #-}
 
 module Language.Egison.Quote(egison,
@@ -51,10 +65,16 @@ runIOThrowsError = fmap ignore . runErrorT
 
 -- * QuasiQuoter
 
--- | QuasiQuoter for egison expression
--- The format is: [egison | <egison-expression> :: <type-signature> |]
+-- | 
+-- QuasiQuoter for egison expression
+-- The format is:
+--
+-- > expr := [egison | <egison-expression> :: <type-signature> |]
+--
 -- Type signature is defined as follows
+--
 -- > <Typ> = Bool | Int | Double | Float | Char | String | [<Typ>] | (<Typ>, <Typ>, ..., <Typ>) | <Typ> -> <Typ> -> ... <Typ>
+--
 -- Embedded Egison expression is run-time evaluated by using 'Language.Egison.Core.eval' and 'System.Unsafe.unsafePerformIO'.
 -- For more detailed usage, please refer to <https://github.com/xenophobia/Egison-Quote>. 
 egison :: QuasiQuoter
