@@ -1,15 +1,21 @@
 {-# Language TemplateHaskell, QuasiQuotes, TypeSynonymInstances, FlexibleInstances, UndecidableInstances, OverlappingInstances, IncoherentInstances #-}
 
-module Language.Egison.Quote(egison, TypeSignature) where
+module Language.Egison.Quote(egison,
+                             TypeSignature,
+                             parseQuote,
+                             parseType,
+                             readQuote,
+                             toHaskellExp) where
 
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
 import Language.Haskell.TH.Quote
 
 import Text.Parsec
+import Text.Parsec.String (Parser)
 
 import Language.Egison.Core
-import Language.Egison.Types hiding (Type)
+import Language.Egison.Types hiding (Type, Parser)
 import Language.Egison.Parser
 import Language.Egison.Variables
 
@@ -48,7 +54,7 @@ runIOThrowsError = fmap ignore . runErrorT
 -- | QuasiQuoter for egison expression
 -- The format is: [egison | <egison-expression> :: <type-signature> |]
 -- Type signature is defined as follows
--- > <Typ> = Bool | Int | Double | Float | Double | Char | String | [<Typ>] | (<Typ>, <Typ>, ..., <Typ>) | <Typ> -> <Typ> -> ... <Typ>
+-- > <Typ> = Bool | Int | Double | Float | Char | String | [<Typ>] | (<Typ>, <Typ>, ..., <Typ>) | <Typ> -> <Typ> -> ... <Typ>
 -- Embedded Egison expression is run-time evaluated by using 'Language.Egison.Core.eval' and 'System.Unsafe.unsafePerformIO'.
 -- For more detailed usage, please refer to <https://github.com/xenophobia/Egison-Quote>. 
 egison :: QuasiQuoter
@@ -94,7 +100,10 @@ tsToType (TupleTS ts) = foldl appT (tupleT (length ts)) (map tsToType ts)
 tsToType (ListTS t) = appT listT (tsToType t)
 tsToType (ArrowTS t1 t2) = appT (foldl appT arrowT (map tsToType t1)) (tsToType t2)
 
--- Parser for TypeSignature
+-- * Parser
+
+-- | Parser for TypeSignature
+parseType :: Parser TypeSignature
 parseType = do
   t1_ <- many (try $ lexeme parseType' <* lexeme (string "->"))
   t2 <- lexeme parseType'
@@ -114,13 +123,18 @@ parseType' = (string "Char" >> return CharTS)
                             return $ if null ttl then thd else TupleTS (thd:ttl))
              <|> brackets (ListTS <$> lexeme parseType')
 
-readQuote :: String -> ThrowsError (EgisonExpr, TypeSignature)
-readQuote = readOrThrow $ do
+-- | Parser for egison-quote
+parseQuote :: Parser (EgisonExpr, TypeSignature)
+parseQuote = do
   spaces
   expr <- lexeme parseExpr
   lexeme (string "::")
   typ <- lexeme parseType
   return (expr, typ)
+
+-- | Read function for egison-quote
+readQuote :: String -> ThrowsError (EgisonExpr, TypeSignature)
+readQuote = readOrThrow parseQuote
 
 instance Lift InnerExpr where
   lift (ElementExpr x) = appE (conE 'ElementExpr) (lift x)
@@ -177,6 +191,9 @@ instance Lift EgisonExpr where
   lift UndefinedExpr = conE 'UndefinedExpr
   lift x = error "Not implemented lift"
 
+-- * Construction Exp
+
+-- | construct Exp from Egison-expression and type signature
 toHaskellExp :: EgisonExpr -> TypeSignature -> ExpQ
 toHaskellExp (FuncExpr (TupleExpr args) expr) (ArrowTS t1 t2) | length args == length t1 = do
   env <- newName "env"
