@@ -33,11 +33,11 @@ instance IsEgisonExpr Float where toEgisonExpr = FloatExpr . realToFrac
 instance IsEgisonExpr Double where toEgisonExpr = FloatExpr
 instance IsEgisonExpr a => IsEgisonExpr [a] where toEgisonExpr = CollectionExpr . map (ElementExpr . toEgisonExpr)
 instance (IsEgisonExpr a, IsEgisonExpr b) => IsEgisonExpr (a, b) where
-  toEgisonExpr (x, y) = TupleExpr $ [ElementExpr . toEgisonExpr $ x, ElementExpr . toEgisonExpr $ y]
+  toEgisonExpr (x, y) = TupleExpr $ [toEgisonExpr $ x, toEgisonExpr $ y]
 instance (IsEgisonExpr a, IsEgisonExpr b, IsEgisonExpr c) => IsEgisonExpr (a, b, c) where
-  toEgisonExpr (x, y, z) = TupleExpr $ [ElementExpr . toEgisonExpr $ x, ElementExpr . toEgisonExpr $ y, ElementExpr . toEgisonExpr $ z]
+  toEgisonExpr (x, y, z) = TupleExpr $ [toEgisonExpr $ x, toEgisonExpr $ y, toEgisonExpr $ z]
 instance (IsEgisonExpr a, IsEgisonExpr b, IsEgisonExpr c, IsEgisonExpr d) => IsEgisonExpr (a, b, c, d) where
-  toEgisonExpr (w, x, y, z) = TupleExpr $ [ElementExpr . toEgisonExpr $ w, ElementExpr . toEgisonExpr $ x, ElementExpr . toEgisonExpr $ y, ElementExpr . toEgisonExpr $ z]
+  toEgisonExpr (w, x, y, z) = TupleExpr $ [toEgisonExpr $ w, toEgisonExpr $ x, toEgisonExpr $ y, toEgisonExpr $ z]
 
 runIOThrowsError :: IOThrowsError a -> IO a
 runIOThrowsError = fmap ignore . runErrorT
@@ -174,10 +174,11 @@ instance Lift EgisonExpr where
   lift (GenerateArrayExpr x y) = appsE [conE 'GenerateArrayExpr, lift x, lift y]
   lift (ApplyExpr x l) = appsE [conE 'ApplyExpr, lift x, lift l]
   lift SomethingExpr = conE 'SomethingExpr
+  lift UndefinedExpr = conE 'UndefinedExpr
   lift x = error "Not implemented lift"
 
 toHaskellExp :: EgisonExpr -> TypeSignature -> ExpQ
-toHaskellExp (FuncExpr (ATuple args) expr) (ArrowTS t1 t2) | length args == length t1 = do
+toHaskellExp (FuncExpr (TupleExpr args) expr) (ArrowTS t1 t2) | length args == length t1 = do
   env <- newName "env"
   let (argsName, argsType) = unzip . concat $ zipWith argsExpand args t1
       argsExpr = zipWith (\aname atype -> sigE (varE (mkName aname)) atype) argsName argsType
@@ -190,14 +191,14 @@ toHaskellExp (FuncExpr (ATuple args) expr) (ArrowTS t1 t2) | length args == leng
      (doE $ bindEnv : loadEnv : (bindExprs ++ [noBindS (appE (appE (varE 'fmap) (converter t2)) [|eval $(varE env) expr|])])))))
 toHaskellExp expr typ = appE (converter typ) (appE (varE 'evalEgison) (lift expr))
 
-argsExpand :: Args -> TypeSignature -> [(String, TypeQ)]
-argsExpand (AVar a) t = [(a, tsToType t)]
-argsExpand (ATuple as) (TupleTS ts) = concat $ zipWith argsExpand as ts
+argsExpand :: EgisonExpr -> TypeSignature -> [(String, TypeQ)]
+argsExpand (PatVarExpr a _) t = [(a, tsToType t)]
+argsExpand (TupleExpr as) (TupleTS ts) = concat $ zipWith argsExpand as ts
 argsExpand _ _ = error "Invarid type."
 
-toHaskellArgsPat :: Args -> PatQ
-toHaskellArgsPat (AVar a) = varP (mkName a)
-toHaskellArgsPat (ATuple as) = tupP $ map toHaskellArgsPat as
+toHaskellArgsPat :: EgisonExpr -> PatQ
+toHaskellArgsPat (PatVarExpr a _) = varP (mkName a)
+toHaskellArgsPat (TupleExpr as) = tupP $ map toHaskellArgsPat as
 
 evalEgison :: EgisonExpr -> EgisonVal
 evalEgison expr = unsafePerformIO $ do
