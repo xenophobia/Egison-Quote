@@ -12,12 +12,12 @@
 -- 
 -----------------------------------------------------------------------------   
 
-{-# Language TemplateHaskell, QuasiQuotes, TypeSynonymInstances, FlexibleInstances, UndecidableInstances, OverlappingInstances, IncoherentInstances #-}
+{-# Language TemplateHaskell, QuasiQuotes, TypeSynonymInstances, FlexibleInstances, UndecidableInstances, ViewPatterns, OverlappingInstances, IncoherentInstances #-}
 
 module Language.Egison.Quote(egison,
                              TypeSignature,
-                             parseQuote,
                              parseType,
+                             parseQuote,
                              readQuote,
                              toHaskellExp) where
 
@@ -35,6 +35,9 @@ import Language.Egison.Variables
 
 import Data.Either
 import Data.Ratio
+import Data.Maybe
+import Data.List
+
 import Control.Monad.Error hiding (lift)
 import Control.Monad.Trans hiding (lift)
 import Control.Arrow
@@ -45,12 +48,13 @@ import System.IO.Unsafe (unsafePerformIO)
 class IsEgisonExpr a where
     toEgisonExpr :: a -> EgisonExpr
 
-instance Integral i => IsEgisonExpr i where toEgisonExpr = NumberExpr . fromIntegral
+instance IsEgisonExpr Int where toEgisonExpr = NumberExpr . fromIntegral
+instance IsEgisonExpr Integer where toEgisonExpr = NumberExpr . fromIntegral
 instance IsEgisonExpr Char where toEgisonExpr = CharExpr
-instance IsEgisonExpr String where toEgisonExpr = StringExpr
 instance IsEgisonExpr Bool where toEgisonExpr = BoolExpr
 instance IsEgisonExpr Float where toEgisonExpr = FloatExpr . realToFrac
 instance IsEgisonExpr Double where toEgisonExpr = FloatExpr
+instance IsEgisonExpr String where toEgisonExpr = StringExpr
 instance IsEgisonExpr a => IsEgisonExpr [a] where toEgisonExpr = CollectionExpr . map (ElementExpr . toEgisonExpr)
 instance (IsEgisonExpr a, IsEgisonExpr b) => IsEgisonExpr (a, b) where
   toEgisonExpr (x, y) = TupleExpr $ [toEgisonExpr $ x, toEgisonExpr $ y]
@@ -67,6 +71,7 @@ runIOThrowsError = fmap ignore . runErrorT
 
 -- | 
 -- QuasiQuoter for egison expression
+--
 -- The format is:
 --
 -- > expr := [egison | <egison-expression> :: <type-signature> |]
@@ -226,7 +231,58 @@ toHaskellExp (FuncExpr (TupleExpr args) expr) (ArrowTS t1 t2) | length args == l
    (appE (varE 'unsafePerformIO) 
     (appE (varE 'runIOThrowsError)
      (doE $ bindEnv : loadEnv : (bindExprs ++ [noBindS (appE (appE (varE 'fmap) (converter t2)) [|eval $(varE env) expr|])])))))
-toHaskellExp expr typ = appE (converter typ) (appE (varE 'evalEgison) (lift expr))
+toHaskellExp expr typ = appE (converter typ) (evalEgisonTopLevel expr)
+-- toHaskellExp expr typ = appE (converter typ) (appE (varE 'evalEgison) (lift expr))
+
+childExpr :: EgisonExpr -> [EgisonExpr]
+childExpr (CharExpr _) = []
+childExpr (StringExpr _) = []
+childExpr (BoolExpr _) = []
+childExpr (NumberExpr _) = []
+childExpr (FloatExpr _) = []
+childExpr (VarExpr _ cs) = cs
+childExpr (MacroVarExpr _ cs) = cs
+childExpr (PatVarOmitExpr c) = [c]
+childExpr (VarOmitExpr c) = [c]
+childExpr (PatVarExpr _ cs) = cs
+childExpr WildCardExpr = []
+childExpr (ValuePatExpr c) = [c]
+childExpr (CutPatExpr c) = [c]
+childExpr (NotPatExpr c) = [c]
+childExpr (AndPatExpr cs) = cs
+childExpr (OrPatExpr cs) = cs
+childExpr (PredPatExpr c cs) = c:cs
+childExpr (InductiveDataExpr _ cs) = cs
+childExpr (TupleExpr cs) = cs
+childExpr (CollectionExpr cs) = map go cs
+    where go (ElementExpr x) = x
+          go (SubCollectionExpr x) = x
+childExpr (ArrayExpr cs) = concatMap go cs
+    where go (AElementExpr x) = [x]
+          go (AInnerArrayExpr xs) = concatMap go xs
+childExpr (FuncExpr c1 c2) = [c1, c2]
+childExpr (MacroExpr _ c) = [c]
+childExpr (LoopExpr _ _ c1 c2 c3) = [c1, c2, c3]
+childExpr (ParamsExpr _ c1 c2) = [c1, c2]
+childExpr (IfExpr c1 c2 c3) = [c1, c2, c3]
+childExpr (LetExpr bs c) = c:concatMap go bs
+    where go (x, y) = [x, y]
+childExpr (LetRecExpr bs c) = c:map snd bs
+childExpr (DoExpr bs c) = c:concatMap go bs
+    where go (x, y) = [x, y]
+-- childExpr (TypeExpr DestructInfoExpr)
+childExpr (MatchExpr c1 c2 ms) = c1:c2:concatMap go ms
+    where go (x, y) = [x, y]
+childExpr (MatchAllExpr c1 c2 (c3, c4)) = [c1, c2, c3, c4]
+childExpr (GenerateArrayExpr c1 c2) = [c1, c2]
+childExpr (ApplyExpr c1 c2) = [c1, c2]
+childExpr SomethingExpr = []
+childExpr UndefinedExpr = []
+
+variables :: EgisonExpr -> [String]
+variables (VarExpr var cs) = var:concatMap variables cs
+variables (MacroVarExpr var cs) = var:concatMap variables cs
+variables (childExpr -> cs) = concatMap variables cs
 
 argsExpand :: EgisonExpr -> TypeSignature -> [(String, TypeQ)]
 argsExpand (PatVarExpr a _) t = [(a, tsToType t)]
@@ -242,3 +298,19 @@ evalEgison expr = unsafePerformIO $ do
   env <- primitiveBindings
   loadLibraries env
   runIOThrowsError $ eval env expr
+
+toEgisonName :: String -> String
+toEgisonName (reverse -> name) = reverse . tail . dropWhile (/= '_') $ name
+
+evalEgisonTopLevel :: EgisonExpr -> ExpQ
+evalEgisonTopLevel expr = do
+  env <- newName "env"
+  vars <- concatMap maybeToList <$> mapM lookupValueName (nub $ variables expr)
+  let exprs = map (\var -> (varE var)) vars
+  (appE (varE 'unsafePerformIO)
+   (doE (
+     [(varP env) `bindS` (varE 'primitiveBindings),
+      noBindS (appE (varE 'loadLibraries) (varE env))] ++ 
+     zipWith (\vname vexpr -> noBindS [|runIOThrowsError $ defineVar $(varE env) (toEgisonName vname, []) =<< (liftIO $ makeClosure $(varE env) (toEgisonExpr $(vexpr)))|]) (map show vars) exprs ++
+     [noBindS (appE (varE 'runIOThrowsError) (appsE [varE 'eval, varE env, [|expr|]]))]
+    )))

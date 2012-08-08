@@ -18,10 +18,10 @@ Type signature **`<Typ>`** is defined by following BNF.
 
     <Typ> = Bool | Int | Double | Float | Double | Char | String | [<Typ>] | (<Typ>, <Typ>, ..., <Typ>) | <Typ> -> <Typ> -> ... <Typ>
 
-* Egison *collection* have type [a].
+* Egison *collection* has type [a].
 Thus, we can't use hetero-type collection such as `{1, 'a'}`
-* Egison *tuple* have type (a, b, ..).
-* Egison *lambda abstraction* have arrow type.Additionally, we have some restriction in type of arguments and return value.(mention later)
+* Egison *tuple* has type (a, b, ..).
+* Egison *lambda abstraction* has arrow type.Additionally, we have some restriction in type of arguments and return value.(mention later)
 
 We can use Egison expression following above type signature. 
 
@@ -57,6 +57,20 @@ However, there sre some restriction.
  * we cannot pass a function as argument.(for example, (Int -> Int) -> Int is invarid type signature)
 
 **Note**: In evaluating Egison-function, we use `unsafePerformIO` function.
+
+Antiquote
+===========================
+
+We can put Haskell variables in Egison expression as follows
+
+    infixes :: [Int] -> [[Int]]
+    infixes l = [egison|(match-all l (List Integer) [<join _ <join $xs _>> xs]) :: [[Int]]|]
+
+Note: **[Char]** type(= String type) values is interpreted as **String type value of Egison**.
+So the following quotation is invalid.
+
+    infixes' :: [Char] -> [[Char]]
+    infixes' l = [egison|(match-all l (List Integer) [<join _ <join $xs _>> xs]) :: [[Char]]|]
 
 Example
 ===========================
