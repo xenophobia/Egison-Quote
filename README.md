@@ -61,10 +61,12 @@ However, there sre some restriction.
 Antiquote
 ===========================
 
-We can put Haskell variables in Egison expression as follows
+We can put Haskell variables in an Egison expression as follows
 
     infixes :: [Int] -> [[Int]]
-    infixes l = [egison|(match-all l (List Integer) [<join _ <join $xs _>> xs]) :: [[Int]]|]
+    infixes l = [egison|(match-all #{l} (List Integer) [<join _ <join $xs _>> xs]) :: [[Int]]|]
+
+Likely above example, you can embed a Haskell *variable* to an Egison expression by clarifying with `#{~}`
 
 Note: **[Char]** type(= String type) values is interpreted as **String type value of Egison**.
 So the following quotation is invalid.

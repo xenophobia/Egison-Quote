@@ -17,9 +17,12 @@
 module Language.Egison.Quote(egison,
                              TypeSignature,
                              parseType,
+                             pickupAntiquote,
+                             parseAntiquote,
                              parseQuote,
                              readQuote,
-                             toHaskellExp) where
+                             toHaskellExp,
+                             evalEgisonTopLevel) where
 
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
@@ -76,15 +79,24 @@ runIOThrowsError = fmap ignore . runErrorT
 --
 -- > expr := [egison | <egison-expression> :: <type-signature> |]
 --
+-- For example, with Egison pattern matching, /powerset function/ can be expressed easily as follows.
+--
+-- >>> [egison|(lambda [$l] (match-all l (Multiset Integer) [<join $l _> l])) :: [Int] -> [[Int]]|] [1..3]
+-- [[],[1],[2],[1,2],[3],[1,3],[2,3],[1,2,3]]
+--
 -- Type signature is defined as follows
 --
 -- > <Typ> = Bool | Int | Double | Float | Char | String | [<Typ>] | (<Typ>, <Typ>, ..., <Typ>) | <Typ> -> <Typ> -> ... <Typ>
 --
 -- Embedded Egison expression is run-time evaluated by using 'Language.Egison.Core.eval' and 'System.Unsafe.unsafePerformIO'.
--- For more detailed usage, please refer to <https://github.com/xenophobia/Egison-Quote>. 
+-- For more detailed usage, please refer to <https://github.com/xenophobia/Egison-Quote>.
 egison :: QuasiQuoter
 egison = QuasiQuoter {
-           quoteExp = uncurry toHaskellExp . extractValue . readQuote,
+           quoteExp = \input ->
+                      let (antiquotes, input') = pickupAntiquote input
+                          (expr, typ) = extractValue . readQuote $ input'
+                      in
+                        toHaskellExp expr antiquotes typ,
            quotePat = error "Not implemented pat-quote.",
            quoteType = error "Not implemented type-quote.",
            quoteDec = error "Not implemented dec-quote."
@@ -147,6 +159,25 @@ parseType' = (string "Char" >> return CharTS)
                             ttl <- many (lexeme (char ',') >> lexeme parseType')
                             return $ if null ttl then thd else TupleTS (thd:ttl))
              <|> brackets (ListTS <$> lexeme parseType')
+
+-- | Pick up antiquoted variables and delete notation @#{~}@
+-- 
+-- > "(+ #{x} y)"  ---> ([x], "(+ x y)")
+pickupAntiquote :: String -> ([String], String)
+pickupAntiquote input = either (error.show) id $ parse parseAntiquote "Antiquote" input
+
+-- | Parser for 'pickupAntiquote'
+parseAntiquote :: Parser ([String], String)
+parseAntiquote = (try $ do lexeme (char '#')
+                           lexeme (char '{')
+                           antiquote <- identifier
+                           lexeme (char '}')
+                           (antiquotes, rest) <- parseAntiquote
+                           return $ (antiquote:antiquotes, ' ':antiquote++" "++rest))
+                 <|> (try $ do c <- anyChar
+                               (antiquotes, rest) <- parseAntiquote
+                               return $ (antiquotes, c:rest))
+                 <|> (eof >> return ([], ""))
 
 -- | Parser for egison-quote
 parseQuote :: Parser (EgisonExpr, TypeSignature)
@@ -219,20 +250,14 @@ instance Lift EgisonExpr where
 -- * Construction Exp
 
 -- | construct Exp from Egison-expression and type signature
-toHaskellExp :: EgisonExpr -> TypeSignature -> ExpQ
-toHaskellExp (FuncExpr (TupleExpr args) expr) (ArrowTS t1 t2) | length args == length t1 = do
-  env <- newName "env"
+toHaskellExp :: EgisonExpr -> [String] -> TypeSignature -> ExpQ
+toHaskellExp (FuncExpr (TupleExpr args) expr) antiquotes (ArrowTS t1 t2) | length args == length t1 = do
   let (argsName, argsType) = unzip . concat $ zipWith argsExpand args t1
       argsExpr = zipWith (\aname atype -> sigE (varE (mkName aname)) atype) argsName argsType
-      bindEnv = bindS (varP env) [|liftIO primitiveBindings|]
-      loadEnv = noBindS [|liftIO (loadLibraries $(varE env))|]
-      bindExprs = zipWith (\aname aexpr -> noBindS [|defineVar $(varE env) (aname, []) =<< (liftIO $ makeClosure $(varE env) (toEgisonExpr $(aexpr)))|]) argsName argsExpr
+      bindExprs envName = zipWith (\aname aexpr -> noBindS [|runIOThrowsError $ defineVar $(varE envName) (aname, []) =<< (liftIO $ makeClosure $(varE envName) (toEgisonExpr $(aexpr)))|]) argsName argsExpr
   (lamE (map toHaskellArgsPat args)
-   (appE (varE 'unsafePerformIO) 
-    (appE (varE 'runIOThrowsError)
-     (doE $ bindEnv : loadEnv : (bindExprs ++ [noBindS (appE (appE (varE 'fmap) (converter t2)) [|eval $(varE env) expr|])])))))
-toHaskellExp expr typ = appE (converter typ) (evalEgisonTopLevel expr)
--- toHaskellExp expr typ = appE (converter typ) (appE (varE 'evalEgison) (lift expr))
+        (appE (converter t2) (evalEgisonTopLevel expr antiquotes bindExprs)))
+toHaskellExp expr antiquotes typ = appE (converter typ) (evalEgisonTopLevel expr antiquotes (const []))
 
 childExpr :: EgisonExpr -> [EgisonExpr]
 childExpr (CharExpr _) = []
@@ -279,11 +304,6 @@ childExpr (ApplyExpr c1 c2) = [c1, c2]
 childExpr SomethingExpr = []
 childExpr UndefinedExpr = []
 
-variables :: EgisonExpr -> [String]
-variables (VarExpr var cs) = var:concatMap variables cs
-variables (MacroVarExpr var cs) = var:concatMap variables cs
-variables (childExpr -> cs) = concatMap variables cs
-
 argsExpand :: EgisonExpr -> TypeSignature -> [(String, TypeQ)]
 argsExpand (PatVarExpr a _) t = [(a, tsToType t)]
 argsExpand (TupleExpr as) (TupleTS ts) = concat $ zipWith argsExpand as ts
@@ -293,24 +313,18 @@ toHaskellArgsPat :: EgisonExpr -> PatQ
 toHaskellArgsPat (PatVarExpr a _) = varP (mkName a)
 toHaskellArgsPat (TupleExpr as) = tupP $ map toHaskellArgsPat as
 
-evalEgison :: EgisonExpr -> EgisonVal
-evalEgison expr = unsafePerformIO $ do
-  env <- primitiveBindings
-  loadLibraries env
-  runIOThrowsError $ eval env expr
+evalEgison :: EgisonExpr -> Env -> EgisonVal
+evalEgison expr env = unsafePerformIO $ runIOThrowsError $ eval env expr
 
-toEgisonName :: String -> String
-toEgisonName (reverse -> name) = reverse . tail . dropWhile (/= '_') $ name
-
-evalEgisonTopLevel :: EgisonExpr -> ExpQ
-evalEgisonTopLevel expr = do
+evalEgisonTopLevel :: EgisonExpr -> [String] -> (Name -> [StmtQ]) -> ExpQ
+evalEgisonTopLevel expr vars binds = do
   env <- newName "env"
-  vars <- concatMap maybeToList <$> mapM lookupValueName (nub $ variables expr)
-  let exprs = map (\var -> (varE var)) vars
+  let exprs = map (varE . mkName) vars
   (appE (varE 'unsafePerformIO)
    (doE (
      [(varP env) `bindS` (varE 'primitiveBindings),
       noBindS (appE (varE 'loadLibraries) (varE env))] ++ 
-     zipWith (\vname vexpr -> noBindS [|runIOThrowsError $ defineVar $(varE env) (toEgisonName vname, []) =<< (liftIO $ makeClosure $(varE env) (toEgisonExpr $(vexpr)))|]) (map show vars) exprs ++
+     zipWith (\vname vexpr -> noBindS [|runIOThrowsError $ defineVar $(varE env) (vname, []) =<< (liftIO $ makeClosure $(varE env) (toEgisonExpr $(vexpr)))|]) vars exprs ++
+     binds env ++
      [noBindS (appE (varE 'runIOThrowsError) (appsE [varE 'eval, varE env, [|expr|]]))]
     )))
