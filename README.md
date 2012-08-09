@@ -72,7 +72,7 @@ Note: **[Char]** type(= String type) values is interpreted as **String type valu
 So the following quotation is invalid.
 
     infixes' :: [Char] -> [[Char]]
-    infixes' l = [egison|(match-all l (List Integer) [<join _ <join $xs _>> xs]) :: [[Char]]|]
+    infixes' l = [egison|(match-all #{l} (List Char) [<join _ <join $xs _>> xs]) :: [[Char]]|] -- error!
 
 Example
 ===========================
