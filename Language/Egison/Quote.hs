@@ -40,6 +40,7 @@ import Data.Either
 import Data.Ratio
 import Data.Maybe
 import Data.List
+import Data.IORef
 
 import Control.Monad.Error hiding (lift)
 import Control.Monad.Trans hiding (lift)
@@ -122,7 +123,27 @@ converter (TupleTS ts) = do
   patvars <- replicateM (length ts) $ newName "x"
   lamE [conP 'Tuple [listP $ map varP patvars]] (foldl (\acc (x, t) -> appE acc (appE (converter t) (varE x))) (conE $ tupleDataName (length ts)) (zip patvars ts))
 converter (ListTS t) = [| \(Collection vs) -> map $(converter t) vs |]
-converter (ArrowTS _ _) = error "Invarid return type: t1 -> t2."
+converter (ArrowTS args ret) = [| \func@(Func _ _ env) -> $(wrap 'func 'env) |]
+    where
+      wrap (varE -> funcVal) (varE -> env) = do
+        (funcName, (func, funcP)) <- (show &&& varE &&& varP) <$> newName "func"
+        argsName <- mapM newName $ map (("x"++) . show) [1..length args]
+        let (args, argsP) = (map varE &&& map varP) argsName
+        (lamE argsP
+         (appE (converter ret)
+          (appE (varE 'unsafePerformIO)
+           (doE $
+                bindS funcP (appE (varE 'newIORef) (appE (conE 'Value) funcVal)) :
+                noBindS [| runIOThrowsError $ defineVar $(env) (funcName, []) $(func) |] :
+                makeBinding (map show argsName) args env ++
+                [noBindS [| runIOThrowsError (eval $(env) (ApplyExpr (VarExpr funcName []) (TupleExpr (map toEgisonExpr $(listE args))))) |]]))))
+
+test = do
+  nenv <- nullEnv
+  rets <- runIOThrowsError $ eval nenv (FuncExpr (TupleExpr [PatVarExpr "x" []]) (VarExpr "x" []))
+  val <- newIORef $ Value rets
+  runIOThrowsError $ defineVar nenv ("x", []) val
+  runIOThrowsError $ eval nenv (ApplyExpr (VarExpr "x" []) (NumberExpr 11))
 
 -- TypeSignature -> (corresponding Haskell Type)
 tsToType :: TypeSignature -> TypeQ
@@ -155,10 +176,11 @@ parseType' = (string "Char" >> return CharTS)
              <|> (string "Integer" >> return IntegerTS)
              <|> (string "Float" >> return FloatTS)
              <|> (string "Double" >> return DoubleTS)
-             <|> parens (do thd <- lexeme parseType'
-                            ttl <- many (lexeme (char ',') >> lexeme parseType')
-                            return $ if null ttl then thd else TupleTS (thd:ttl))
+             <|> (try $ parens $ do thd <- lexeme parseType'
+                                    ttl <- many (lexeme (char ',') >> lexeme parseType')
+                                    return $ if null ttl then thd else TupleTS (thd:ttl))
              <|> brackets (ListTS <$> lexeme parseType')
+             <|> parens parseType
 
 -- | Pick up antiquoted variables and delete notation @#{~}@
 -- 
@@ -249,15 +271,32 @@ instance Lift EgisonExpr where
 
 -- * Construction Exp
 
+nArgsApply :: Int -> TypeSignature -> ([TypeSignature], TypeSignature)
+nArgsApply 0 typ = ([], typ)
+nArgsApply n (ArrowTS args ret) = if null args2 then (args1, ret) else (args1, ArrowTS args2 ret)
+    where (args1, args2) = splitAt n args
+nArgsApply _ _ = error "Wrong apply"
+
+-- | make do-binding
+makeBinding :: [String] -- ^ variable names
+            -> [ExpQ] -- ^ binding expressions
+            -> ExpQ -- ^ environmental name
+            -> [StmtQ]
+makeBinding names exprs env = zipWith (\name expr -> noBindS [|runIOThrowsError $ defineVar $(env) (name, []) =<< (liftIO $ makeClosure $(env) (toEgisonExpr $(expr)))|]) names exprs
+
+nameExprWithType :: String -> TypeQ -> ExpQ
+nameExprWithType name typ = sigE (varE (mkName name)) typ
+
 -- | construct Exp from Egison-expression and type signature
 toHaskellExp :: EgisonExpr -> [String] -> TypeSignature -> ExpQ
-toHaskellExp (FuncExpr (TupleExpr args) expr) antiquotes (ArrowTS t1 t2) | length args == length t1 = do
+toHaskellExp (FuncExpr (TupleExpr args) expr) antiquotes (nArgsApply (length args) -> (t1, t2)) = do
   let (argsName, argsType) = unzip . concat $ zipWith argsExpand args t1
-      argsExpr = zipWith (\aname atype -> sigE (varE (mkName aname)) atype) argsName argsType
-      bindExprs envName = zipWith (\aname aexpr -> noBindS [|runIOThrowsError $ defineVar $(varE envName) (aname, []) =<< (liftIO $ makeClosure $(varE envName) (toEgisonExpr $(aexpr)))|]) argsName argsExpr
+      argsExpr = zipWith nameExprWithType argsName argsType
+      bindnames = antiquotes ++ argsName
+      bindexprs = map (varE . mkName) antiquotes ++ argsExpr
   (lamE (map toHaskellArgsPat args)
-        (appE (converter t2) (evalEgisonTopLevel expr antiquotes bindExprs)))
-toHaskellExp expr antiquotes typ = appE (converter typ) (evalEgisonTopLevel expr antiquotes (const []))
+        (appE (converter t2) (evalEgisonTopLevel expr bindnames bindexprs)))
+toHaskellExp expr antiquotes typ = appE (converter typ) (evalEgisonTopLevel expr antiquotes (map (varE . mkName) antiquotes))
 
 childExpr :: EgisonExpr -> [EgisonExpr]
 childExpr (CharExpr _) = []
@@ -304,27 +343,30 @@ childExpr (ApplyExpr c1 c2) = [c1, c2]
 childExpr SomethingExpr = []
 childExpr UndefinedExpr = []
 
+-- | Expand binding
+--
+-- > [a1 [a2 a3]] :: (Int, (Char, Char)) -->  [(a1, Int), (a2, Char), (a3, Char)]
 argsExpand :: EgisonExpr -> TypeSignature -> [(String, TypeQ)]
 argsExpand (PatVarExpr a _) t = [(a, tsToType t)]
 argsExpand (TupleExpr as) (TupleTS ts) = concat $ zipWith argsExpand as ts
 argsExpand _ _ = error "Invarid type."
 
+-- | Egison binding to Haskell binding
+--
+-- > [a1 [a2 a3]] -->  (a1, (a2, a3))
 toHaskellArgsPat :: EgisonExpr -> PatQ
 toHaskellArgsPat (PatVarExpr a _) = varP (mkName a)
 toHaskellArgsPat (TupleExpr as) = tupP $ map toHaskellArgsPat as
 
-evalEgison :: EgisonExpr -> Env -> EgisonVal
-evalEgison expr env = unsafePerformIO $ runIOThrowsError $ eval env expr
-
-evalEgisonTopLevel :: EgisonExpr -> [String] -> (Name -> [StmtQ]) -> ExpQ
-evalEgisonTopLevel expr vars binds = do
-  env <- newName "env"
-  let exprs = map (varE . mkName) vars
+evalEgisonTopLevel :: EgisonExpr -- ^ evaluated expression
+                   -> [String] -- ^ variable names
+                   -> [ExpQ] -- ^ binding expressions
+                   -> ExpQ
+evalEgisonTopLevel expr bindvars bindexprs = do
+  (env, envP) <- (varE &&& varP) <$> newName "env"
   (appE (varE 'unsafePerformIO)
    (doE (
-     [(varP env) `bindS` (varE 'primitiveBindings),
-      noBindS (appE (varE 'loadLibraries) (varE env))] ++ 
-     zipWith (\vname vexpr -> noBindS [|runIOThrowsError $ defineVar $(varE env) (vname, []) =<< (liftIO $ makeClosure $(varE env) (toEgisonExpr $(vexpr)))|]) vars exprs ++
-     binds env ++
-     [noBindS (appE (varE 'runIOThrowsError) (appsE [varE 'eval, varE env, [|expr|]]))]
-    )))
+     envP `bindS` (varE 'primitiveBindings) : 
+     noBindS (appE (varE 'loadLibraries) env) :
+     makeBinding bindvars bindexprs env ++
+     [noBindS [| runIOThrowsError $ eval $(env) expr |]  ])))
