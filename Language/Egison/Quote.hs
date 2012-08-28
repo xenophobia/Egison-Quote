@@ -15,7 +15,7 @@
 {-# Language TemplateHaskell, QuasiQuotes, TypeSynonymInstances, FlexibleInstances, UndecidableInstances, ViewPatterns, OverlappingInstances, IncoherentInstances #-}
 
 module Language.Egison.Quote(egison,
-                             TypeSignature,
+                             TypeSignature(..),
                              parseType,
                              pickupAntiquote,
                              parseAntiquote,
@@ -41,7 +41,6 @@ import Data.Ratio
 import Data.Maybe
 import Data.List
 import Data.IORef
-
 import Control.Monad.Error hiding (lift)
 import Control.Monad.Trans hiding (lift)
 import Control.Arrow
@@ -110,6 +109,22 @@ data TypeSignature = CharTS | StringTS | BoolTS | IntTS | IntegerTS | FloatTS | 
                    | TupleTS [TypeSignature] | ListTS TypeSignature 
                    | ArrowTS [TypeSignature] TypeSignature deriving (Show)
 
+matchAppType :: Type -> Maybe ([Type], Type)
+matchAppType (AppT ArrowT ret) = return ([], ret)
+matchAppType (AppT arg rest) = do
+  (args, ret) <- matchAppType rest
+  return (arg:args, ret)
+matchAppType _ = Nothing
+
+matchTupleType :: Type -> Maybe [Type]
+matchTupleType (AppT (TupleT _) ret) = return [ret]
+matchTupleType (AppT element rest) = (element:) <$> matchTupleType rest
+matchTupleType _ = Nothing
+
+matchListType :: Type -> Maybe Type
+matchListType t = case t of AppT ListT typ -> return typ
+                            _ -> Nothing
+
 -- Generate [ EgisonVal -> (corresponding Haskell Value) ] function from TypeSignature
 converter :: TypeSignature -> ExpQ
 converter CharTS = [| \(Char x) -> x |]
@@ -137,13 +152,6 @@ converter (ArrowTS args ret) = [| \func@(Func _ _ env) -> $(wrap 'func 'env) |]
                 noBindS [| runIOThrowsError $ defineVar $(env) (funcName, []) $(func) |] :
                 makeBinding (map show argsName) args env ++
                 [noBindS [| runIOThrowsError (eval $(env) (ApplyExpr (VarExpr funcName []) (TupleExpr (map toEgisonExpr $(listE args))))) |]]))))
-
-test = do
-  nenv <- nullEnv
-  rets <- runIOThrowsError $ eval nenv (FuncExpr (TupleExpr [PatVarExpr "x" []]) (VarExpr "x" []))
-  val <- newIORef $ Value rets
-  runIOThrowsError $ defineVar nenv ("x", []) val
-  runIOThrowsError $ eval nenv (ApplyExpr (VarExpr "x" []) (NumberExpr 11))
 
 -- TypeSignature -> (corresponding Haskell Type)
 tsToType :: TypeSignature -> TypeQ
