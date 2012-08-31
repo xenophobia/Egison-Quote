@@ -36,11 +36,9 @@ import Language.Egison.Types hiding (Type, Parser)
 import Language.Egison.Parser
 import Language.Egison.Variables
 
-import Data.Either
-import Data.Ratio
-import Data.Maybe
-import Data.List
-import Data.IORef
+import Data.Either (either)
+import Data.Ratio (numerator, denominator, (%))
+import Data.IORef (newIORef)
 import Control.Monad.Error hiding (lift)
 import Control.Monad.Trans hiding (lift)
 import Control.Arrow
@@ -122,8 +120,10 @@ matchTupleType (AppT element rest) = (element:) <$> matchTupleType rest
 matchTupleType _ = Nothing
 
 matchListType :: Type -> Maybe Type
-matchListType t = case t of AppT ListT typ -> return typ
-                            _ -> Nothing
+matchListType t = case t of {AppT ListT typ -> return typ; _ -> Nothing}
+
+matchConstType :: Type -> Maybe String
+matchConstType t= case t of {ConT t -> Just . nameBase $ t; _ -> Nothing}
 
 -- Generate [ EgisonVal -> (corresponding Haskell Value) ] function from TypeSignature
 converter :: TypeSignature -> ExpQ
