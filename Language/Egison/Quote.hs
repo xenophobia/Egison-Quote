@@ -15,7 +15,6 @@
 {-# Language TemplateHaskell, QuasiQuotes, TypeSynonymInstances, FlexibleInstances, UndecidableInstances, ViewPatterns, OverlappingInstances, IncoherentInstances #-}
 
 module Language.Egison.Quote(egison,
-                             TypeSignature(..),
                              parseType,
                              pickupAntiquote,
                              parseAntiquote,
@@ -93,7 +92,7 @@ egison = QuasiQuoter {
            quoteExp = \input ->
                       let (antiquotes, input') = pickupAntiquote input
                           (expr, typ) = extractValue . readQuote $ input'
-                      in
+                      in do
                         toHaskellExp expr antiquotes typ,
            quotePat = error "Not implemented pat-quote.",
            quoteType = error "Not implemented type-quote.",
@@ -102,21 +101,16 @@ egison = QuasiQuoter {
 
 -- * Type
 
--- | The type of type signature of egison expression
-data TypeSignature = CharTS | StringTS | BoolTS | IntTS | IntegerTS | FloatTS | DoubleTS
-                   | TupleTS [TypeSignature] | ListTS TypeSignature 
-                   | ArrowTS [TypeSignature] TypeSignature deriving (Show)
-
 matchAppType :: Type -> Maybe ([Type], Type)
-matchAppType (AppT ArrowT ret) = return ([], ret)
-matchAppType (AppT arg rest) = do
-  (args, ret) <- matchAppType rest
-  return (arg:args, ret)
+matchAppType t@(AppT (AppT ArrowT _) _) = Just . matchAppType' $ t
+    where
+      matchAppType' (AppT (AppT ArrowT arg) rest) = first (++[arg]) $ matchAppType' rest
+      matchAppType' ret = ([], ret)
 matchAppType _ = Nothing
 
 matchTupleType :: Type -> Maybe [Type]
 matchTupleType (AppT (TupleT _) ret) = return [ret]
-matchTupleType (AppT element rest) = (element:) <$> matchTupleType rest
+matchTupleType (AppT rest element) = (++[element]) <$> matchTupleType rest
 matchTupleType _ = Nothing
 
 matchListType :: Type -> Maybe Type
@@ -126,19 +120,19 @@ matchConstType :: Type -> Maybe String
 matchConstType t= case t of {ConT t -> Just . nameBase $ t; _ -> Nothing}
 
 -- Generate [ EgisonVal -> (corresponding Haskell Value) ] function from TypeSignature
-converter :: TypeSignature -> ExpQ
-converter CharTS = [| \(Char x) -> x |]
-converter StringTS = [| \(String x) -> x |]
-converter BoolTS = [| \(Bool x) -> x |]
-converter IntTS = [| \(Number x) -> (fromIntegral x) :: Int |]
-converter IntegerTS = [| \(Number x) -> x |]
-converter DoubleTS = [| \(Float x) -> x |]
-converter FloatTS = [| \(Float x) -> (realToFrac x) :: Float |]
-converter (TupleTS ts) = do
+converter :: Type -> ExpQ
+converter (matchConstType -> Just "Char") = [| \(Char x) -> x |]
+converter (matchConstType -> Just "String") = [| \(String x) -> x |]
+converter (matchConstType -> Just "Bool") = [| \(Bool x) -> x |]
+converter (matchConstType -> Just "Int") = [| \(Number x) -> (fromIntegral x) :: Int |]
+converter (matchConstType -> Just "Integer") = [| \(Number x) -> x |]
+converter (matchConstType -> Just "Double") = [| \(Float x) -> x |]
+converter (matchConstType -> Just "Float") = [| \(Float x) -> (realToFrac x) :: Float |]
+converter (matchTupleType -> Just ts) = do
   patvars <- replicateM (length ts) $ newName "x"
   lamE [conP 'Tuple [listP $ map varP patvars]] (foldl (\acc (x, t) -> appE acc (appE (converter t) (varE x))) (conE $ tupleDataName (length ts)) (zip patvars ts))
-converter (ListTS t) = [| \(Collection vs) -> map $(converter t) vs |]
-converter (ArrowTS args ret) = [| \func@(Func _ _ env) -> $(wrap 'func 'env) |]
+converter (matchListType -> Just t) = [| \(Collection vs) -> map $(converter t) vs |]
+converter (matchAppType -> Just (args, ret)) = [| \func@(Func _ _ env) -> $(wrap 'func 'env) |]
     where
       wrap (varE -> funcVal) (varE -> env) = do
         (funcName, (func, funcP)) <- (show &&& varE &&& varP) <$> newName "func"
@@ -152,42 +146,33 @@ converter (ArrowTS args ret) = [| \func@(Func _ _ env) -> $(wrap 'func 'env) |]
                 noBindS [| runIOThrowsError $ defineVar $(env) (funcName, []) $(func) |] :
                 makeBinding (map show argsName) args env ++
                 [noBindS [| runIOThrowsError (eval $(env) (ApplyExpr (VarExpr funcName []) (TupleExpr (map toEgisonExpr $(listE args))))) |]]))))
-
--- TypeSignature -> (corresponding Haskell Type)
-tsToType :: TypeSignature -> TypeQ
-tsToType CharTS = [t| Char |]
-tsToType StringTS = [t| String |]
-tsToType BoolTS = [t| Bool |]
-tsToType IntTS = [t| Int |]
-tsToType IntegerTS = [t| Integer |]
-tsToType DoubleTS = [t| Double |]
-tsToType FloatTS = [t| Float |]
-tsToType (TupleTS ts) = foldl appT (tupleT (length ts)) (map tsToType ts)
-tsToType (ListTS t) = appT listT (tsToType t)
-tsToType (ArrowTS t1 t2) = appT (foldl appT arrowT (map tsToType t1)) (tsToType t2)
+converter t = error $ "Invarid type: " ++ show t
 
 -- * Parser
 
 -- | Parser for TypeSignature
-parseType :: Parser TypeSignature
+parseType :: Parser Type
 parseType = do
   t1_ <- many (try $ lexeme parseType' <* lexeme (string "->"))
   t2 <- lexeme parseType'
   case t1_ of
     [] -> return t2
-    t1 -> return (ArrowTS t1 t2)
+    t1 -> return $ foldr AppT t2 (map (AppT ArrowT) t1)
 
-parseType' = (string "Char" >> return CharTS)
-             <|> (string "String" >> return StringTS)
-             <|> (string "Bool" >> return BoolTS)
-             <|> (string "Int" >> return IntTS)
-             <|> (string "Integer" >> return IntegerTS)
-             <|> (string "Float" >> return FloatTS)
-             <|> (string "Double" >> return DoubleTS)
+parseType' :: Parser Type
+parseType' = (string "Char" >> return (ConT ''Char))
+             <|> (string "String" >> return (ConT ''String))
+             <|> (string "Bool" >> return (ConT ''Bool))
+             <|> (string "Int" >> return (ConT ''Int))
+             <|> (string "Integer" >> return (ConT ''Integer))
+             <|> (string "Float" >> return (ConT ''Float))
+             <|> (string "Double" >> return (ConT ''Double))
              <|> (try $ parens $ do thd <- lexeme parseType'
                                     ttl <- many (lexeme (char ',') >> lexeme parseType')
-                                    return $ if null ttl then thd else TupleTS (thd:ttl))
-             <|> brackets (ListTS <$> lexeme parseType')
+                                    return $ if null ttl
+                                               then thd
+                                               else foldl AppT (TupleT (length $ thd:ttl)) (thd:ttl))
+             <|> brackets (AppT ListT <$> lexeme parseType')
              <|> parens parseType
 
 -- | Pick up antiquoted variables and delete notation @#{~}@
@@ -210,7 +195,7 @@ parseAntiquote = (try $ do lexeme (char '#')
                  <|> (eof >> return ([], ""))
 
 -- | Parser for egison-quote
-parseQuote :: Parser (EgisonExpr, TypeSignature)
+parseQuote :: Parser (EgisonExpr, Type)
 parseQuote = do
   spaces
   expr <- lexeme parseExpr
@@ -219,7 +204,7 @@ parseQuote = do
   return (expr, typ)
 
 -- | Read function for egison-quote
-readQuote :: String -> ThrowsError (EgisonExpr, TypeSignature)
+readQuote :: String -> ThrowsError (EgisonExpr, Type)
 readQuote = readOrThrow parseQuote
 
 instance Lift InnerExpr where
@@ -279,12 +264,6 @@ instance Lift EgisonExpr where
 
 -- * Construction Exp
 
-nArgsApply :: Int -> TypeSignature -> ([TypeSignature], TypeSignature)
-nArgsApply 0 typ = ([], typ)
-nArgsApply n (ArrowTS args ret) = if null args2 then (args1, ret) else (args1, ArrowTS args2 ret)
-    where (args1, args2) = splitAt n args
-nArgsApply _ _ = error "Wrong apply"
-
 -- | make do-binding
 makeBinding :: [String] -- ^ variable names
             -> [ExpQ] -- ^ binding expressions
@@ -296,8 +275,8 @@ nameExprWithType :: String -> TypeQ -> ExpQ
 nameExprWithType name typ = sigE (varE (mkName name)) typ
 
 -- | construct Exp from Egison-expression and type signature
-toHaskellExp :: EgisonExpr -> [String] -> TypeSignature -> ExpQ
-toHaskellExp (FuncExpr (TupleExpr args) expr) antiquotes (nArgsApply (length args) -> (t1, t2)) = do
+toHaskellExp :: EgisonExpr -> [String] -> Type -> ExpQ
+toHaskellExp (FuncExpr (TupleExpr args) expr) antiquotes (nArgsApp (length args) -> (t1, t2)) = do
   let (argsName, argsType) = unzip . concat $ zipWith argsExpand args t1
       argsExpr = zipWith nameExprWithType argsName argsType
       bindnames = antiquotes ++ argsName
@@ -351,13 +330,19 @@ childExpr (ApplyExpr c1 c2) = [c1, c2]
 childExpr SomethingExpr = []
 childExpr UndefinedExpr = []
 
+nArgsApp :: Int -> Type -> ([Type], Type)
+nArgsApp 0 ret = ([], ret)
+nArgsApp n (AppT (AppT ArrowT arg) rest) = first (arg:) $ nArgsApp (n-1) rest
+nArgsApp _ _ = error "Invarid Args."
+
 -- | Expand binding
 --
 -- > [a1 [a2 a3]] :: (Int, (Char, Char)) -->  [(a1, Int), (a2, Char), (a3, Char)]
-argsExpand :: EgisonExpr -> TypeSignature -> [(String, TypeQ)]
-argsExpand (PatVarExpr a _) t = [(a, tsToType t)]
-argsExpand (TupleExpr as) (TupleTS ts) = concat $ zipWith argsExpand as ts
-argsExpand _ _ = error "Invarid type."
+argsExpand :: EgisonExpr -> Type -> [(String, TypeQ)]
+argsExpand (PatVarExpr a _) t = [(a, return t)]
+argsExpand (TupleExpr as) (matchTupleType -> Just ts) | length as == length ts = concat $ zipWith argsExpand as ts
+                                                      | otherwise = error "Wrong number of args."
+argsExpand e t = error $ "Invarid argument: \n" ++ show e ++ "\n" ++ show t
 
 -- | Egison binding to Haskell binding
 --
