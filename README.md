@@ -21,7 +21,8 @@ Type signature **`<Typ>`** is defined by following BNF.
 * Egison *collection* has type [a].
 Thus, we can't use hetero-type collection such as `{1, 'a'}`
 * Egison *tuple* has type (a, b, ..).
-* Egison *lambda abstraction* has arrow type.Additionally, we have some restriction in type of arguments and return value.(mention later)
+* Egison *lambda abstraction* has arrow type.Additionally, we have a restriction in type of arguments.(mention later)
+* For example, `a -> b -> c` and `a -> (b -> c)` are *not equivalent*. Such as, `(lambda [$x $y] ...)` has the former type, `(lambda [$x] (lambda[$y] ...))` has the latter type. Of course, you can't confuse these types. `(if #{flag} (lambda [$x $y] ...) (lambda [$x] (lambda [$y] ...)))` has invarid type.
 
 We can use Egison expression following above type signature. 
 
@@ -51,9 +52,19 @@ This function can be used as follows
     > combination [1..5] 4
     [[1,2,3,4],[1,2,3,5],[1,2,4,5],[1,3,4,5],[2,3,4,5]]
 
-However, there sre some restriction.
+And you can write *a function-return function*. That is, nested lambda abstruction is allowed as follows.
 
- * we cannot use nested lambda.
+    returnEgisonFunction :: Bool -> (Int -> Int)
+    returnEgisonFunction = [egison| (lambda [$b] (if b (lambda [$x] (* x 2)) (lambda [$y] (* y 3)))) :: Bool -> (Int -> Int)|]
+    -- Remark: "Bool -> Int -> Int" is wrong type signature! This quoted expression has the type: "Bool -> (Int -> Int)"
+
+    > returnEgisonFunction True 5
+    10
+    > returnEgisonFunction False 5
+    15
+
+However, there is the following restriction.
+
  * we cannot pass a function as argument.(for example, (Int -> Int) -> Int is invarid type signature)
 
 **Note**: In evaluating Egison-function, we use `unsafePerformIO` function.

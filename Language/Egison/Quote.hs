@@ -230,9 +230,9 @@ instance Lift EgisonExpr where
                                  (litE (integerL n)),
                                  (litE (integerL d))])))
   lift (VarExpr x l) = appsE [conE 'VarExpr, lift x, lift l]
-  lift (MacroVarExpr x l) = appsE [conE 'MacroVarExpr, lift x, lift l]
-  lift (PatVarOmitExpr x) = appE (conE 'PatVarOmitExpr) (lift x)
-  lift (VarOmitExpr x) = appE (conE 'VarOmitExpr) (lift x)
+  lift (MacroVarExpr x) = appsE [conE 'MacroVarExpr, lift x]
+  lift (PatVarOmitExpr x l) = appsE [conE 'PatVarOmitExpr, lift x, lift l]
+  lift (VarOmitExpr x l) = appsE [conE 'VarOmitExpr, lift x, lift l]
   lift (PatVarExpr x l) = appsE [conE 'PatVarExpr, lift x, lift l]
   lift WildCardExpr = conE 'WildCardExpr
   lift (ValuePatExpr x) = appE (conE 'ValuePatExpr) (lift x)
@@ -292,9 +292,9 @@ childExpr (BoolExpr _) = []
 childExpr (NumberExpr _) = []
 childExpr (FloatExpr _) = []
 childExpr (VarExpr _ cs) = cs
-childExpr (MacroVarExpr _ cs) = cs
-childExpr (PatVarOmitExpr c) = [c]
-childExpr (VarOmitExpr c) = [c]
+childExpr (MacroVarExpr _) = []
+childExpr (PatVarOmitExpr _ cs) = cs
+childExpr (VarOmitExpr _ cs) = cs
 childExpr (PatVarExpr _ cs) = cs
 childExpr WildCardExpr = []
 childExpr (ValuePatExpr c) = [c]
